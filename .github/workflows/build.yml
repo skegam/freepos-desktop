@@ -1,0 +1,60 @@
+name: "Compilar FreePOS (Mac, Windows, Linux)"
+
+# Se activa de dos formas:
+# 1) Automático: cuando subes una "etiqueta" de versión, ej: v0.1.0
+# 2) Manual: desde la pestaña "Actions" de GitHub, botón "Run workflow"
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versión a publicar (ej: v0.1.0)'
+        required: true
+        default: 'v0.1.0'
+
+# Permite que el workflow pueda crear una "Release" en tu repositorio
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-latest, ubuntu-22.04, windows-latest]
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Instalar dependencias del sistema (solo Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Instalar Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Instalar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Instalar dependencias de npm
+        run: npm install
+
+      - name: Compilar y publicar
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}
+          releaseName: "FreePOS ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}"
+          releaseBody: "Instaladores generados automáticamente para Mac, Windows y Linux."
+          releaseDraft: true
+          prerelease: false
