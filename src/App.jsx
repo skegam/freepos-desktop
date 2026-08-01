@@ -2158,7 +2158,7 @@ function SettingsPage({ settings, setSettings, onExportBackup, onImportBackup, o
 
   async function handleCheckUpdates() {
     setUpdateBusy(true);
-    const info = await onCheckUpdates();
+    const info = await onCheckUpdates(form.updateRepo);
     setUpdateBusy(false);
     setUpdateResult(info || { available: false, notFound: true });
   }
@@ -2170,7 +2170,7 @@ function SettingsPage({ settings, setSettings, onExportBackup, onImportBackup, o
     if (res.ok) setBackupMsg({ ok: true, text: `Copia guardada correctamente en: ${res.path}` });
     else if (res.reason === "cancelled") setBackupMsg(null);
     else if (res.reason === "unsupported") setBackupMsg({ ok: false, text: "Esta función solo está disponible en la app de escritorio (Tauri)." });
-    else setBackupMsg({ ok: false, text: "No se pudo guardar la copia de seguridad." });
+    else setBackupMsg({ ok: false, text: "No se pudo guardar la copia de seguridad. Revisa que instalaste los plugins del Paso 7.6 (@tauri-apps/plugin-dialog y @tauri-apps/plugin-fs) y que copiaste main.rs y capabilities/default.json actualizados." });
   }
 
   async function handleImport() {
@@ -2181,7 +2181,7 @@ function SettingsPage({ settings, setSettings, onExportBackup, onImportBackup, o
     else if (res.reason === "cancelled") setBackupMsg(null);
     else if (res.reason === "invalid") setBackupMsg({ ok: false, text: "Ese archivo no parece ser una copia de seguridad válida de FreePOS." });
     else if (res.reason === "unsupported") setBackupMsg({ ok: false, text: "Esta función solo está disponible en la app de escritorio (Tauri)." });
-    else setBackupMsg({ ok: false, text: "No se pudo importar el archivo." });
+    else setBackupMsg({ ok: false, text: "No se pudo importar el archivo. Revisa que instalaste los plugins del Paso 7.6 (@tauri-apps/plugin-dialog y @tauri-apps/plugin-fs) y que copiaste main.rs y capabilities/default.json actualizados." });
   }
 
   return (
@@ -2308,7 +2308,7 @@ function SettingsPage({ settings, setSettings, onExportBackup, onImportBackup, o
           FreePOS revisa solo, cada vez que abre, si hay una versión más nueva publicada ahí.
         </p>
         <div className="flex items-center gap-3">
-          <Button type="button" variant="ghost" onClick={handleCheckUpdates} disabled={updateBusy || !settings.updateRepo}>
+          <Button type="button" variant="ghost" onClick={handleCheckUpdates} disabled={updateBusy || !form.updateRepo}>
             Buscar actualizaciones ahora
           </Button>
           {updateResult && (
@@ -2435,11 +2435,6 @@ export default function App() {
     } catch (e) {
       window.open(url, "_blank");
     }
-  }
-
-  async function manualCheckForUpdates() {
-    const info = await checkForUpdates(settings.updateRepo);
-    return info;
   }
 
   function setSettings(next) { setSettingsState(next); saveCollection(KEYS.settings, next); }
@@ -2613,7 +2608,7 @@ export default function App() {
           {page === "purchases" && user.role === "admin" && <Purchases products={products} setProducts={setProducts} purchases={purchases} setPurchases={setPurchases} settings={settings} />}
           {page === "reports" && user.role === "admin" && <Reports sales={sales} products={products} returns={returns} settings={settings} user={user} onReturn={handleReturn} />}
           {page === "users" && user.role === "admin" && <UsersPage users={users} setUsers={setUsers} currentUser={user} />}
-          {page === "settings" && user.role === "admin" && <SettingsPage settings={settings} setSettings={setSettings} onExportBackup={exportBackup} onImportBackup={importBackup} onCheckUpdates={manualCheckForUpdates} onOpenExternal={openExternal} />}
+          {page === "settings" && user.role === "admin" && <SettingsPage settings={settings} setSettings={setSettings} onExportBackup={exportBackup} onImportBackup={importBackup} onCheckUpdates={checkForUpdates} onOpenExternal={openExternal} />}
         </main>
       </div>
 
