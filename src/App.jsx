@@ -10,7 +10,12 @@ import {
 
 // Súbelo cada vez que publiques una versión nueva en GitHub (debe coincidir con el
 // tag de la release, ej: si publicas "v0.2.0", pon "0.2.0" aquí).
-const APP_VERSION = "0.1.0";
+const APP_VERSION = "0.1.1";
+
+// Repositorio de GitHub donde se publican las actualizaciones de FreePOS.
+// Es una propiedad del programa (no de cada negocio), por eso queda fija aquí
+// en vez de tener que escribirla en cada computador donde se instale.
+const UPDATE_REPO = "skegam/freepos-desktop";
 
 const CURRENCIES = [
   { code: "COP", symbol: "$", decimals: 0, name: "Peso colombiano" },
@@ -36,7 +41,7 @@ const DEFAULT_SETTINGS = {
   barcodeScannerEnabled: true,
   dayResetHour: 6, // hora del día en la que se considera que empieza un nuevo "día operativo"
   recoveryCode: null, // se genera automáticamente la primera vez que arranca el programa
-  updateRepo: "", // ej: "tu-usuario/freepos-desktop" — para buscar actualizaciones en GitHub
+  updateRepo: UPDATE_REPO,
 };
 
 const DEFAULT_CATEGORIES = ["Abarrotes", "Lácteos", "Panadería", "Bebidas", "Aseo"];
@@ -114,13 +119,19 @@ function isNewerVersion(latest, current) {
 // Consulta la última release publicada en GitHub (releases/latest es un endpoint público,
 // no necesita ningún token). Devuelve null si no hay repo configurado o algo falla.
 async function checkForUpdates(repo) {
-  if (!repo || !repo.includes("/")) return null;
+  if (!repo || !repo.includes("/")) {
+    return { available: false, notFound: true, message: "No hay repositorio configurado (escríbelo y guarda cambios primero)." };
+  }
   try {
     const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`);
-    if (!res.ok) return null;
+    if (!res.ok) {
+      return { available: false, notFound: true, message: `GitHub respondió ${res.status} (revisa que el repositorio "${repo}" exista, sea público o accesible, y que ya tenga al menos una release publicada).` };
+    }
     const data = await res.json();
     const latestVersion = (data.tag_name || "").replace(/^v/i, "");
-    if (!latestVersion) return null;
+    if (!latestVersion) {
+      return { available: false, notFound: true, message: "El repositorio no tiene ninguna release publicada todavía." };
+    }
     return {
       available: isNewerVersion(latestVersion, APP_VERSION),
       latestVersion,
@@ -129,7 +140,7 @@ async function checkForUpdates(repo) {
     };
   } catch (e) {
     console.error("No se pudo buscar actualizaciones", e);
-    return null;
+    return { available: false, notFound: true, message: (e && (e.message || e.toString())) || "Error de red desconocido." };
   }
 }
 
@@ -2143,10 +2154,14 @@ function SettingsPage({ settings, setSettings, onExportBackup, onImportBackup, o
   const [backupMsg, setBackupMsg] = useState(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateResult, setUpdateResult] = useState(null);
+  const [saveStatus, setSaveStatus] = useState(null);
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
-  function save(e) {
+  async function save(e) {
     e.preventDefault();
-    setSettings(form);
+    setSaveStatus("saving");
+    const ok = await setSettings(form);
+    setSaveStatus(ok ? "saved" : "error");
+    window.setTimeout(() => setSaveStatus(null), 3000);
   }
 
   async function testDrawer() {
@@ -2158,7 +2173,7 @@ function SettingsPage({ settings, setSettings, onExportBackup, onImportBackup, o
 
   async function handleCheckUpdates() {
     setUpdateBusy(true);
-    const info = await onCheckUpdates(form.updateRepo);
+    const info = await onCheckUpdates(UPDATE_REPO);
     setUpdateBusy(false);
     setUpdateResult(info || { available: false, notFound: true });
   }
@@ -2170,7 +2185,7 @@ function SettingsPage({ settings, setSettings, onExportBackup, onImportBackup, o
     if (res.ok) setBackupMsg({ ok: true, text: `Copia guardada correctamente en: ${res.path}` });
     else if (res.reason === "cancelled") setBackupMsg(null);
     else if (res.reason === "unsupported") setBackupMsg({ ok: false, text: "Esta función solo está disponible en la app de escritorio (Tauri)." });
-    else setBackupMsg({ ok: false, text: "No se pudo guardar la copia de seguridad. Revisa que instalaste los plugins del Paso 7.6 (@tauri-apps/plugin-dialog y @tauri-apps/plugin-fs) y que copiaste main.rs y capabilities/default.json actualizados." });
+    else setBackupMsg({ ok: false, text: `No se pudo guardar la copia de seguridad. Detalle técnico: ${res.message || "desconocido"}` });
   }
 
   async function handleImport() {
@@ -2181,7 +2196,7 @@ function SettingsPage({ settings, setSettings, onExportBackup, onImportBackup, o
     else if (res.reason === "cancelled") setBackupMsg(null);
     else if (res.reason === "invalid") setBackupMsg({ ok: false, text: "Ese archivo no parece ser una copia de seguridad válida de FreePOS." });
     else if (res.reason === "unsupported") setBackupMsg({ ok: false, text: "Esta función solo está disponible en la app de escritorio (Tauri)." });
-    else setBackupMsg({ ok: false, text: "No se pudo importar el archivo. Revisa que instalaste los plugins del Paso 7.6 (@tauri-apps/plugin-dialog y @tauri-apps/plugin-fs) y que copiaste main.rs y capabilities/default.json actualizados." });
+    else setBackupMsg({ ok: false, text: `No se pudo importar el archivo. Detalle técnico: ${res.message || "desconocido"}` });
   }
 
   return (
@@ -2248,7 +2263,11 @@ function SettingsPage({ settings, setSettings, onExportBackup, onImportBackup, o
           Funciona con cualquier lector USB o Bluetooth que se comporte como teclado (la gran mayoría). Solo escanea mientras estés en la pantalla de Ventas: el producto se agrega automáticamente al carrito.
         </p>
 
-        <Button type="submit" className="self-start mt-2"><Check size={16} /> Guardar cambios</Button>
+        <div className="flex items-center gap-3 mt-2">
+          <Button type="submit" disabled={saveStatus === "saving"}><Check size={16} /> Guardar cambios</Button>
+          {saveStatus === "saved" && <span className="text-xs font-medium" style={{ color: COLORS.primaryDark }}>Cambios guardados correctamente.</span>}
+          {saveStatus === "error" && <span className="text-xs font-medium" style={{ color: COLORS.danger }}>No se pudo guardar. Revisa la consola / permisos del plugin "store".</span>}
+        </div>
       </form>
 
       <div className="rounded-xl p-5 flex flex-col gap-3" style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}` }}>
@@ -2300,20 +2319,20 @@ function SettingsPage({ settings, setSettings, onExportBackup, onImportBackup, o
         <p className="text-sm" style={{ color: COLORS.ink }}>
           Versión instalada: <span className="font-mono font-semibold">v{APP_VERSION}</span>
         </p>
-        <Field label="Repositorio de GitHub (usuario/repositorio)">
-          <TextInput value={form.updateRepo} onChange={(e) => set("updateRepo", e.target.value)} placeholder="ej: skegam/freepos-desktop" />
-        </Field>
+        <p className="text-sm" style={{ color: COLORS.ink }}>
+          Repositorio: <span className="font-mono">{UPDATE_REPO}</span>
+        </p>
         <p className="text-xs -mt-1" style={{ color: COLORS.inkSoft }}>
-          Guarda cambios (botón de arriba) después de escribir el repositorio. Cuando esté configurado,
-          FreePOS revisa solo, cada vez que abre, si hay una versión más nueva publicada ahí.
+          FreePOS revisa solo, cada vez que abre, si hay una versión más nueva publicada — no necesitas
+          configurar nada, este dato viene incorporado en el programa.
         </p>
         <div className="flex items-center gap-3">
-          <Button type="button" variant="ghost" onClick={handleCheckUpdates} disabled={updateBusy || !form.updateRepo}>
+          <Button type="button" variant="ghost" onClick={handleCheckUpdates} disabled={updateBusy}>
             Buscar actualizaciones ahora
           </Button>
           {updateResult && (
             updateResult.notFound ? (
-              <span className="text-xs" style={{ color: COLORS.danger }}>No se pudo consultar el repositorio (revisa el nombre, o que tengas internet).</span>
+              <span className="text-xs" style={{ color: COLORS.danger }}>{updateResult.message || "No se pudo consultar el repositorio."}</span>
             ) : updateResult.available ? (
               <div className="flex items-center gap-2">
                 <span className="text-xs font-medium" style={{ color: COLORS.primaryDark }}>Hay una versión nueva: v{updateResult.latestVersion}</span>
@@ -2374,6 +2393,9 @@ export default function App() {
       if (!mergedSettings.recoveryCode) {
         mergedSettings.recoveryCode = generateRecoveryCode();
       }
+      if (!mergedSettings.updateRepo) {
+        mergedSettings.updateRepo = UPDATE_REPO;
+      }
       setSettingsState(mergedSettings);
       setUsersState(u); setProductsState(p); setCategoriesState(cat); setPurchasesState(pu); setSalesState(sa);
       setShiftState(sh); setZReportsState(z); setTablesState(tb && tb.length ? tb : DEFAULT_TABLES);
@@ -2415,6 +2437,7 @@ export default function App() {
         return;
       } catch (e) {
         console.error("No se pudo cerrar el programa", e);
+        window.alert(`No se pudo cerrar el programa automáticamente. Detalle técnico: ${(e && (e.message || e.toString())) || "desconocido"}\n\nPuedes forzar el cierre desde el menú del sistema (Cmd+Q en Mac, o Alt+F4 en Windows).`);
       }
     }
     setCloseChoice(false);
@@ -2422,11 +2445,11 @@ export default function App() {
 
   // Revisa en silencio si hay una versión nueva publicada (no descarga ni instala nada)
   useEffect(() => {
-    if (loading || !settings.updateRepo) return;
-    checkForUpdates(settings.updateRepo).then((info) => {
+    if (loading) return;
+    checkForUpdates(UPDATE_REPO).then((info) => {
       if (info && info.available) setUpdateInfo(info);
     });
-  }, [loading, settings.updateRepo]);
+  }, [loading]);
 
   async function openExternal(url) {
     try {
@@ -2437,7 +2460,11 @@ export default function App() {
     }
   }
 
-  function setSettings(next) { setSettingsState(next); saveCollection(KEYS.settings, next); }
+  async function setSettings(next) {
+    setSettingsState(next);
+    const ok = await saveCollection(KEYS.settings, next);
+    return ok;
+  }
   function setUsers(fn) { setUsersState((prev) => { const next = typeof fn === "function" ? fn(prev) : fn; saveCollection(KEYS.users, next); return next; }); }
   function setProducts(fn) { setProductsState((prev) => { const next = typeof fn === "function" ? fn(prev) : fn; saveCollection(KEYS.products, next); return next; }); }
   function setCategories(fn) { setCategoriesState((prev) => { const next = typeof fn === "function" ? fn(prev) : fn; saveCollection(KEYS.categories, next); return next; }); }
@@ -2521,7 +2548,7 @@ export default function App() {
       return { ok: true, path };
     } catch (e) {
       console.error("Error exportando copia de seguridad", e);
-      return { ok: false, reason: "error", error: e };
+      return { ok: false, reason: "error", message: (e && (e.message || e.toString())) || String(e) };
     }
   }
 
@@ -2563,7 +2590,7 @@ export default function App() {
       return { ok: true };
     } catch (e) {
       console.error("Error importando copia de seguridad", e);
-      return { ok: false, reason: "error", error: e };
+      return { ok: false, reason: "error", message: (e && (e.message || e.toString())) || String(e) };
     }
   }
 

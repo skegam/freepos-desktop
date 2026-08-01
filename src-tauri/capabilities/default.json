@@ -6,10 +6,20 @@
   "permissions": [
     "core:default",
     "core:window:default",
+    "core:window:allow-destroy",
+    "core:window:allow-close",
     "core:event:default",
     "store:default",
     "dialog:default",
     "fs:default",
-    "opener:default"
+    "opener:default",
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [{ "path": "**" }]
+    },
+    {
+      "identifier": "fs:allow-read-text-file",
+      "allow": [{ "path": "**" }]
+    }
   ]
 }
