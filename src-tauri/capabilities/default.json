@@ -9,6 +9,7 @@
     "core:window:allow-destroy",
     "core:window:allow-close",
     "core:event:default",
+    "core:path:default",
     "store:default",
     "dialog:default",
     "fs:default",
@@ -19,6 +20,18 @@
     },
     {
       "identifier": "fs:allow-read-text-file",
+      "allow": [{ "path": "**" }]
+    },
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [{ "path": "**" }]
+    },
+    {
+      "identifier": "fs:allow-read-dir",
+      "allow": [{ "path": "**" }]
+    },
+    {
+      "identifier": "fs:allow-remove",
       "allow": [{ "path": "**" }]
     }
   ]

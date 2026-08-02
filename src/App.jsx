@@ -10,7 +10,7 @@ import {
 
 // Súbelo cada vez que publiques una versión nueva en GitHub (debe coincidir con el
 // tag de la release, ej: si publicas "v0.2.0", pon "0.2.0" aquí).
-const APP_VERSION = "0.1.1";
+const APP_VERSION = "0.2.0";
 
 // Repositorio de GitHub donde se publican las actualizaciones de FreePOS.
 // Es una propiedad del programa (no de cada negocio), por eso queda fija aquí
@@ -42,6 +42,7 @@ const DEFAULT_SETTINGS = {
   dayResetHour: 6, // hora del día en la que se considera que empieza un nuevo "día operativo"
   recoveryCode: null, // se genera automáticamente la primera vez que arranca el programa
   updateRepo: UPDATE_REPO,
+  defaultMarginPct: 30, // % de ganancia sugerido por defecto sobre el costo
 };
 
 const DEFAULT_CATEGORIES = ["Abarrotes", "Lácteos", "Panadería", "Bebidas", "Aseo"];
@@ -81,6 +82,7 @@ const KEYS = {
   zReports: "freepos_z_reports",
   tables: "freepos_open_tables",
   returns: "freepos_returns",
+  suppliers: "freepos_suppliers",
 };
 
 /* ---------------------------------- helpers ---------------------------------- */
@@ -103,6 +105,21 @@ function generateRecoveryCode() {
   let s = "";
   for (let i = 0; i < 8; i++) s += chars[Math.floor(Math.random() * chars.length)];
   return `${s.slice(0, 4)}-${s.slice(4)}`;
+}
+
+// El COSTO es lo que pagas por el producto (factura del proveedor).
+// El PRECIO es lo que le cobras al cliente. Son conceptos distintos y nunca se mezclan.
+// "% de ganancia" aquí es margen sobre el costo: precio = costo x (1 + %/100).
+function priceFromCostAndMargin(cost, marginPct) {
+  const c = Number(cost) || 0;
+  const m = Number(marginPct) || 0;
+  return Math.round(c * (1 + m / 100) * 100) / 100;
+}
+function marginFromCostAndPrice(cost, price) {
+  const c = Number(cost) || 0;
+  const p = Number(price) || 0;
+  if (c <= 0) return 0;
+  return Math.round(((p - c) / c) * 1000) / 10; // 1 decimal
 }
 
 function isNewerVersion(latest, current) {
@@ -1129,7 +1146,7 @@ function ReceiptModal({ sale, settings, returns = [], user, onReturn, onClose })
   const canReturnMore = sale.items.some((it) => (alreadyReturned[it.productId] || 0) < it.qty);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 no-print" style={{ background: "rgba(15,20,25,0.45)" }}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(15,20,25,0.45)" }}>
       <div className="w-full max-w-sm rounded-xl shadow-xl overflow-hidden" style={{ background: COLORS.surface }}>
         <div className="flex items-center justify-between px-5 py-3" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
           <h3 className="font-semibold text-sm">Venta completada · Papel {settings.paperWidth || "58"}mm</h3>
@@ -1268,12 +1285,28 @@ function ReturnModal({ sale, alreadyReturned, settings, user, onConfirm, onClose
 
 const NEW_CATEGORY_VALUE = "__new__";
 
-function ProductForm({ initial, categories, onAddCategory, onSave, onClose }) {
-  const [form, setForm] = useState(initial || { name: "", sku: "", barcode: "", category: categories[0] || "", price: "", cost: "", stock: "", minStock: "" });
+function ProductForm({ initial, categories, onAddCategory, settings, onSave, onClose }) {
+  const [form, setForm] = useState(() => {
+    if (initial) {
+      return { ...initial, marginPct: marginFromCostAndPrice(initial.cost, initial.price) };
+    }
+    return { name: "", sku: "", barcode: "", category: categories[0] || "", price: "", cost: "", marginPct: settings.defaultMarginPct, stock: "", minStock: "" };
+  });
   const [newCategory, setNewCategory] = useState("");
   const [creatingCategory, setCreatingCategory] = useState(false);
 
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+
+  // Costo, % de ganancia y precio de venta se recalculan entre sí para que nunca queden desincronizados.
+  function setCost(v) {
+    setForm((f) => ({ ...f, cost: v, price: priceFromCostAndMargin(v, f.marginPct) }));
+  }
+  function setMargin(v) {
+    setForm((f) => ({ ...f, marginPct: v, price: priceFromCostAndMargin(f.cost, v) }));
+  }
+  function setPrice(v) {
+    setForm((f) => ({ ...f, price: v, marginPct: marginFromCostAndPrice(f.cost, v) }));
+  }
 
   function handleCategoryChange(e) {
     if (e.target.value === NEW_CATEGORY_VALUE) {
@@ -1299,6 +1332,7 @@ function ProductForm({ initial, categories, onAddCategory, onSave, onClose }) {
       id: form.id || uid("p"),
       price: Number(form.price) || 0,
       cost: Number(form.cost) || 0,
+      marginPct: Number(form.marginPct) || 0,
       stock: Number(form.stock) || 0,
       minStock: Number(form.minStock) || 0,
     });
@@ -1321,9 +1355,16 @@ function ProductForm({ initial, categories, onAddCategory, onSave, onClose }) {
         {creatingCategory && (
           <TextInput value={newCategory} onChange={(e) => setNewCategory(e.target.value)} placeholder="Nombre de la nueva categoría" autoFocus />
         )}
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Precio de venta"><TextInput type="number" value={form.price} onChange={(e) => set("price", e.target.value)} required /></Field>
-          <Field label="Costo"><TextInput type="number" value={form.cost} onChange={(e) => set("cost", e.target.value)} /></Field>
+        <div className="rounded-lg p-3 flex flex-col gap-3" style={{ background: COLORS.primarySoft }}>
+          <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: COLORS.primaryDark }}>Costo y precio (son cosas distintas)</p>
+          <div className="grid grid-cols-3 gap-3">
+            <Field label="Costo (lo que pagas)"><TextInput type="number" value={form.cost} onChange={(e) => setCost(e.target.value)} /></Field>
+            <Field label="% Ganancia"><TextInput type="number" value={form.marginPct} onChange={(e) => setMargin(e.target.value)} /></Field>
+            <Field label="Precio de venta"><TextInput type="number" value={form.price} onChange={(e) => setPrice(e.target.value)} required /></Field>
+          </div>
+          <p className="text-xs" style={{ color: COLORS.primaryDark }}>
+            Cambia el costo o el % de ganancia y el precio se recalcula solo — o escribe el precio directamente y el % se ajusta.
+          </p>
         </div>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Stock actual"><TextInput type="number" value={form.stock} onChange={(e) => set("stock", e.target.value)} /></Field>
@@ -1433,7 +1474,7 @@ function Inventory({ products, setProducts, categories, setCategories, addCatego
         <table className="w-full text-sm">
           <thead>
             <tr style={{ background: "#FAFAFB", borderBottom: `1px solid ${COLORS.border}` }}>
-              {["Producto", "SKU", "Código de barras", "Categoría", "Precio", "Costo", "Stock", ""].map((h) => (
+              {["Producto", "SKU", "Código de barras", "Categoría", "Costo", "Margen", "Precio", "Stock", ""].map((h) => (
                 <th key={h} className="text-left px-4 py-2.5 text-xs font-semibold uppercase" style={{ color: COLORS.inkSoft }}>{h}</th>
               ))}
             </tr>
@@ -1445,8 +1486,9 @@ function Inventory({ products, setProducts, categories, setCategories, addCatego
                 <td className="px-4 py-2.5 font-mono text-xs" style={{ color: COLORS.inkSoft }}>{p.sku}</td>
                 <td className="px-4 py-2.5 font-mono text-xs" style={{ color: COLORS.inkSoft }}>{p.barcode || "—"}</td>
                 <td className="px-4 py-2.5">{p.category}</td>
-                <td className="px-4 py-2.5 font-mono">{formatMoney(p.price, settings.currency)}</td>
                 <td className="px-4 py-2.5 font-mono" style={{ color: COLORS.inkSoft }}>{formatMoney(p.cost, settings.currency)}</td>
+                <td className="px-4 py-2.5 font-mono" style={{ color: COLORS.primaryDark }}>{marginFromCostAndPrice(p.cost, p.price)}%</td>
+                <td className="px-4 py-2.5 font-mono">{formatMoney(p.price, settings.currency)}</td>
                 <td className="px-4 py-2.5">
                   {p.stock <= p.minStock ? <Badge tone="amber">{p.stock} bajo</Badge> : <span className="font-mono">{p.stock}</span>}
                 </td>
@@ -1468,6 +1510,7 @@ function Inventory({ products, setProducts, categories, setCategories, addCatego
           initial={editing}
           categories={categories}
           onAddCategory={addCategory}
+          settings={settings}
           onSave={saveProduct}
           onClose={() => { setShowForm(false); setEditing(null); }}
         />
@@ -1490,17 +1533,43 @@ function Inventory({ products, setProducts, categories, setCategories, addCatego
 
 /* ---------------------------------- Purchases ---------------------------------- */
 
-function PurchaseForm({ products, onSave, onClose }) {
-  const [supplier, setSupplier] = useState("");
+const NEW_SUPPLIER_VALUE = "__new_supplier__";
+
+function PurchaseForm({ products, suppliers, settings, onSave, onClose }) {
+  const firstProduct = products[0];
+  const [supplierId, setSupplierId] = useState(suppliers[0]?.id || NEW_SUPPLIER_VALUE);
+  const [newSupplierName, setNewSupplierName] = useState("");
   const [invoiceNumber, setInvoiceNumber] = useState("");
   const [date, setDate] = useState(todayISO());
-  const [rows, setRows] = useState([{ productId: products[0]?.id || "", qty: 1, cost: products[0]?.cost || 0 }]);
+
+  function rowFromProduct(product) {
+    if (!product) return { productId: "", qty: 1, cost: 0, marginPct: settings.defaultMarginPct, price: 0 };
+    const marginPct = product.marginPct != null
+      ? product.marginPct
+      : (product.cost > 0 ? marginFromCostAndPrice(product.cost, product.price) : settings.defaultMarginPct);
+    return { productId: product.id, qty: 1, cost: product.cost, marginPct, price: product.price };
+  }
+
+  const [rows, setRows] = useState([rowFromProduct(firstProduct)]);
 
   function updateRow(idx, patch) {
     setRows((r) => r.map((row, i) => (i === idx ? { ...row, ...patch } : row)));
   }
+  function changeRowProduct(idx, productId) {
+    const product = products.find((p) => p.id === productId);
+    updateRow(idx, rowFromProduct(product));
+  }
+  function changeRowCost(idx, cost) {
+    updateRow(idx, { cost, price: priceFromCostAndMargin(cost, rows[idx].marginPct) });
+  }
+  function changeRowMargin(idx, marginPct) {
+    updateRow(idx, { marginPct, price: priceFromCostAndMargin(rows[idx].cost, marginPct) });
+  }
+  function changeRowPrice(idx, price) {
+    updateRow(idx, { price, marginPct: marginFromCostAndPrice(rows[idx].cost, price) });
+  }
   function addRow() {
-    setRows((r) => [...r, { productId: products[0]?.id || "", qty: 1, cost: products[0]?.cost || 0 }]);
+    setRows((r) => [...r, rowFromProduct(products[0])]);
   }
   function removeRow(idx) {
     setRows((r) => r.filter((_, i) => i !== idx));
@@ -1510,44 +1579,85 @@ function PurchaseForm({ products, onSave, onClose }) {
 
   function submit(e) {
     e.preventDefault();
-    if (!supplier || rows.length === 0) return;
+    const supplierName = supplierId === NEW_SUPPLIER_VALUE ? newSupplierName.trim() : (suppliers.find((s) => s.id === supplierId)?.name || "");
+    if (!supplierName || rows.length === 0) return;
     onSave({
-      id: uid("pur"), supplier, invoiceNumber, date,
-      items: rows.map((r) => ({ ...r, qty: Number(r.qty) || 0, cost: Number(r.cost) || 0 })),
+      id: uid("pur"),
+      supplierId: supplierId === NEW_SUPPLIER_VALUE ? null : supplierId,
+      supplierName,
+      invoiceNumber, date,
+      items: rows.map((r) => ({
+        productId: r.productId,
+        qty: Number(r.qty) || 0,
+        cost: Number(r.cost) || 0,
+        marginPct: Number(r.marginPct) || 0,
+        price: Number(r.price) || 0,
+      })),
       total,
     });
   }
 
   return (
-    <Modal title="Registrar factura de entrada" onClose={onClose} width="max-w-2xl">
+    <Modal title="Registrar factura de entrada" onClose={onClose} width="max-w-3xl">
       <form onSubmit={submit} className="flex flex-col gap-3">
         <div className="grid grid-cols-3 gap-3">
-          <Field label="Proveedor"><TextInput value={supplier} onChange={(e) => setSupplier(e.target.value)} required /></Field>
-          <Field label="N° de factura"><TextInput value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} /></Field>
+          <Field label="Proveedor">
+            <Select value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
+              {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              <option value={NEW_SUPPLIER_VALUE}>+ Nuevo proveedor…</option>
+            </Select>
+          </Field>
+          {supplierId === NEW_SUPPLIER_VALUE ? (
+            <Field label="Nombre del proveedor nuevo">
+              <TextInput value={newSupplierName} onChange={(e) => setNewSupplierName(e.target.value)} required autoFocus />
+            </Field>
+          ) : (
+            <Field label="N° de factura"><TextInput value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} /></Field>
+          )}
           <Field label="Fecha"><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
         </div>
-        <div className="flex flex-col gap-2">
-          {rows.map((row, idx) => (
-            <div key={idx} className="grid grid-cols-12 gap-2 items-end">
-              <div className="col-span-5"><Field label="Producto">
-                <Select value={row.productId} onChange={(e) => updateRow(idx, { productId: e.target.value })}>
-                  {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </Select>
-              </Field></div>
-              <div className="col-span-3"><Field label="Cantidad">
-                <TextInput type="number" min="1" value={row.qty} onChange={(e) => updateRow(idx, { qty: e.target.value })} />
-              </Field></div>
-              <div className="col-span-3"><Field label="Costo unit.">
-                <TextInput type="number" value={row.cost} onChange={(e) => updateRow(idx, { cost: e.target.value })} />
-              </Field></div>
-              <div className="col-span-1 pb-2">
-                <button type="button" onClick={() => removeRow(idx)}><Trash2 size={16} style={{ color: COLORS.danger }} /></button>
+        {supplierId === NEW_SUPPLIER_VALUE && (
+          <Field label="N° de factura"><TextInput value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} /></Field>
+        )}
+
+        <div className="flex flex-col gap-2 mt-1">
+          {rows.map((row, idx) => {
+            const product = products.find((p) => p.id === row.productId);
+            return (
+              <div key={idx} className="rounded-lg p-3 flex flex-col gap-2" style={{ background: "#FAFAFB", border: `1px solid ${COLORS.border}` }}>
+                <div className="grid grid-cols-12 gap-2 items-end">
+                  <div className="col-span-4"><Field label="Producto">
+                    <Select value={row.productId} onChange={(e) => changeRowProduct(idx, e.target.value)}>
+                      {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </Select>
+                  </Field></div>
+                  <div className="col-span-2"><Field label="Cantidad">
+                    <TextInput type="number" min="1" value={row.qty} onChange={(e) => updateRow(idx, { qty: e.target.value })} />
+                  </Field></div>
+                  <div className="col-span-2"><Field label="Costo unit.">
+                    <TextInput type="number" value={row.cost} onChange={(e) => changeRowCost(idx, e.target.value)} />
+                  </Field></div>
+                  <div className="col-span-2"><Field label="% Ganancia">
+                    <TextInput type="number" value={row.marginPct} onChange={(e) => changeRowMargin(idx, e.target.value)} />
+                  </Field></div>
+                  <div className="col-span-1"><Field label="P. venta">
+                    <TextInput type="number" value={row.price} onChange={(e) => changeRowPrice(idx, e.target.value)} />
+                  </Field></div>
+                  <div className="col-span-1 pb-2 flex justify-center">
+                    <button type="button" onClick={() => removeRow(idx)}><Trash2 size={16} style={{ color: COLORS.danger }} /></button>
+                  </div>
+                </div>
+                {product && (
+                  <p className="text-xs" style={{ color: COLORS.inkSoft }}>
+                    Antes de esta factura: stock {product.stock} · costo {formatMoney(product.cost, settings.currency)} · precio de venta {formatMoney(product.price, settings.currency)}
+                  </p>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
         <Button type="button" variant="subtle" onClick={addRow} className="self-start"><Plus size={14} /> Agregar línea</Button>
-        <div className="flex justify-end font-mono font-bold text-sm" style={{ color: COLORS.ink }}>Total: {formatMoney(total, CURRENCIES[0])}</div>
+        <div className="flex justify-end font-mono font-bold text-sm" style={{ color: COLORS.ink }}>Total factura: {formatMoney(total, settings.currency)}</div>
         <div className="flex gap-2 mt-2">
           <Button type="button" variant="ghost" onClick={onClose} className="flex-1">Cancelar</Button>
           <Button type="submit" className="flex-1">Guardar e ingresar mercancía</Button>
@@ -1557,7 +1667,7 @@ function PurchaseForm({ products, onSave, onClose }) {
   );
 }
 
-function Purchases({ products, setProducts, purchases, setPurchases, settings }) {
+function Purchases({ products, setProducts, purchases, setPurchases, suppliers, setSuppliers, settings }) {
   const [showForm, setShowForm] = useState(false);
 
   function savePurchase(purchase) {
@@ -1565,8 +1675,19 @@ function Purchases({ products, setProducts, purchases, setPurchases, settings })
     setProducts((prev) => prev.map((p) => {
       const line = purchase.items.find((i) => i.productId === p.id);
       if (!line) return p;
-      return { ...p, stock: p.stock + line.qty, cost: line.cost || p.cost };
+      return { ...p, stock: p.stock + line.qty, cost: line.cost, price: line.price, marginPct: line.marginPct };
     }));
+    // Guarda el proveedor y qué productos le compramos, automáticamente.
+    setSuppliers((prev) => {
+      const productIds = purchase.items.map((i) => i.productId);
+      const existing = purchase.supplierId ? prev.find((s) => s.id === purchase.supplierId) : prev.find((s) => s.name.toLowerCase() === purchase.supplierName.toLowerCase());
+      if (existing) {
+        return prev.map((s) => (s.id === existing.id
+          ? { ...s, productIds: Array.from(new Set([...(s.productIds || []), ...productIds])), lastPurchaseAt: purchase.date }
+          : s));
+      }
+      return [...prev, { id: uid("sup"), name: purchase.supplierName, productIds, lastPurchaseAt: purchase.date }];
+    });
     setShowForm(false);
   }
 
@@ -1589,7 +1710,7 @@ function Purchases({ products, setProducts, purchases, setPurchases, settings })
             {purchases.map((p) => (
               <tr key={p.id} style={{ borderBottom: `1px solid ${COLORS.border}` }}>
                 <td className="px-4 py-2.5">{p.date}</td>
-                <td className="px-4 py-2.5 font-medium" style={{ color: COLORS.ink }}>{p.supplier}</td>
+                <td className="px-4 py-2.5 font-medium" style={{ color: COLORS.ink }}>{p.supplierName || p.supplier}</td>
                 <td className="px-4 py-2.5 font-mono text-xs">{p.invoiceNumber || "—"}</td>
                 <td className="px-4 py-2.5">{p.items.length} productos</td>
                 <td className="px-4 py-2.5 font-mono font-semibold">{formatMoney(p.total, settings.currency)}</td>
@@ -1599,7 +1720,35 @@ function Purchases({ products, setProducts, purchases, setPurchases, settings })
         </table>
         {purchases.length === 0 && <EmptyState icon={FileText} title="Sin compras registradas" subtitle="Registra facturas de proveedores para actualizar tu inventario automáticamente." />}
       </div>
-      {showForm && <PurchaseForm products={products} onSave={savePurchase} onClose={() => setShowForm(false)} />}
+
+      <div className="rounded-xl overflow-hidden" style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}` }}>
+        <div className="px-4 py-3" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+          <h3 className="font-semibold text-sm" style={{ color: COLORS.ink }}>Proveedores</h3>
+        </div>
+        <table className="w-full text-sm">
+          <thead>
+            <tr style={{ background: "#FAFAFB", borderBottom: `1px solid ${COLORS.border}` }}>
+              {["Proveedor", "Productos que surte", "Última compra"].map((h) => (
+                <th key={h} className="text-left px-4 py-2.5 text-xs font-semibold uppercase" style={{ color: COLORS.inkSoft }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {suppliers.map((s) => (
+              <tr key={s.id} style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+                <td className="px-4 py-2.5 font-medium" style={{ color: COLORS.ink }}>{s.name}</td>
+                <td className="px-4 py-2.5">
+                  {(s.productIds || []).map((pid) => products.find((p) => p.id === pid)?.name).filter(Boolean).join(", ") || "—"}
+                </td>
+                <td className="px-4 py-2.5">{s.lastPurchaseAt || "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {suppliers.length === 0 && <EmptyState icon={UsersIcon} title="Todavía no hay proveedores" subtitle="Se guardan automáticamente cuando registras una factura." />}
+      </div>
+
+      {showForm && <PurchaseForm products={products} suppliers={suppliers} settings={settings} onSave={savePurchase} onClose={() => setShowForm(false)} />}
     </div>
   );
 }
@@ -1802,7 +1951,7 @@ function XReportModal({ shift, sales, purchases, products, returns, settings, on
   const stats = computeShiftStats(shift, sales, purchases, products, returns);
   return (
     <Modal title="Reporte X — corte de caja" onClose={onClose} width="max-w-sm">
-      <div className="font-mono text-xs flex flex-col gap-1 mx-auto" style={{ width: "260px", color: "#111" }} id="freepos-xreport">
+      <div className="font-mono text-xs flex flex-col gap-1 mx-auto receipt-print" style={{ width: "260px", color: "#111" }} id="freepos-xreport">
         <p className="text-center font-bold text-sm">{settings.businessName}</p>
         <p className="text-center">Reporte X (sin cerrar caja)</p>
         <p className="text-center mb-2">{new Date().toLocaleString("es-CO")}</p>
@@ -1904,7 +2053,7 @@ function ZReportConfirmModal({ shift, sales, purchases, products, returns, setti
 
 function ZReportPrintModal({ report, settings, onClose }) {
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 no-print" style={{ background: "rgba(15,20,25,0.5)" }}>
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: "rgba(15,20,25,0.5)" }}>
       <div className="w-full max-w-sm rounded-xl shadow-xl overflow-hidden" style={{ background: COLORS.surface }}>
         <div className="flex items-center justify-between px-5 py-3" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
           <h3 className="font-semibold text-sm">Caja cerrada</h3>
@@ -2146,7 +2295,7 @@ function UsersPage({ users, setUsers, currentUser }) {
 
 /* ---------------------------------- Settings ---------------------------------- */
 
-function SettingsPage({ settings, setSettings, onExportBackup, onImportBackup, onCheckUpdates, onOpenExternal }) {
+function SettingsPage({ settings, setSettings, user, onExportBackup, onImportBackup, onCheckUpdates, onOpenExternal, onFactoryReset }) {
   const [form, setForm] = useState(settings);
   const [drawerTest, setDrawerTest] = useState(null);
   const [drawerBusy, setDrawerBusy] = useState(false);
@@ -2155,6 +2304,7 @@ function SettingsPage({ settings, setSettings, onExportBackup, onImportBackup, o
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateResult, setUpdateResult] = useState(null);
   const [saveStatus, setSaveStatus] = useState(null);
+  const [showFactoryReset, setShowFactoryReset] = useState(false);
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
   async function save(e) {
     e.preventDefault();
@@ -2212,6 +2362,13 @@ function SettingsPage({ settings, setSettings, onExportBackup, onImportBackup, o
           </Select>
         </Field>
         <Field label="Impuesto por defecto (%)"><TextInput type="number" value={form.taxRate} onChange={(e) => set("taxRate", Number(e.target.value))} /></Field>
+        <Field label="% de ganancia sugerido por defecto">
+          <TextInput type="number" value={form.defaultMarginPct} onChange={(e) => set("defaultMarginPct", Number(e.target.value))} />
+        </Field>
+        <p className="text-xs -mt-1" style={{ color: COLORS.inkSoft }}>
+          Se usa como punto de partida al crear productos o registrar compras — siempre lo puedes
+          cambiar producto por producto. Precio de venta = costo × (1 + % de ganancia / 100).
+        </p>
         <Field label="Hora de reinicio del día operativo">
           <Select value={form.dayResetHour} onChange={(e) => set("dayResetHour", Number(e.target.value))}>
             {Array.from({ length: 24 }).map((_, h) => (
@@ -2312,6 +2469,17 @@ function SettingsPage({ settings, setSettings, onExportBackup, onImportBackup, o
           Importar <strong>reemplaza por completo</strong> los datos actuales de este computador por
           los del archivo — úsalo quieras "clonar" otro equipo, no para combinar información de dos cajas.
         </p>
+        <div style={{ borderTop: `1px dashed ${COLORS.border}` }} className="pt-3 mt-1">
+          <p className="text-xs font-semibold uppercase tracking-wide mb-1" style={{ color: COLORS.inkSoft }}>Backups automáticos (por cortes de luz)</p>
+          <p className="text-xs" style={{ color: COLORS.inkSoft }}>
+            Además de guardar cada cambio al instante, FreePOS deja una copia completa aparte cada
+            5 minutos (y también al cerrar la caja con el Reporte Z), guardando las últimas 10, en la
+            carpeta <span className="font-mono">auto-backups</span> dentro de los datos de la app
+            (en Mac: <span className="font-mono">~/Library/Application Support/com.freepos.app/auto-backups</span>).
+            Si algún día el archivo principal se dañara, puedes restaurar el más reciente de esa
+            carpeta con "Importar copia de seguridad" de arriba.
+          </p>
+        </div>
       </div>
 
       <div className="rounded-xl p-5 flex flex-col gap-3" style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}` }}>
@@ -2345,11 +2513,74 @@ function SettingsPage({ settings, setSettings, onExportBackup, onImportBackup, o
         </div>
       </div>
 
+      <div className="rounded-xl p-5 flex flex-col gap-3" style={{ background: COLORS.dangerSoft, border: `1px solid #F3C9C4` }}>
+        <h3 className="text-xs font-semibold uppercase tracking-wide" style={{ color: COLORS.danger }}>Zona de peligro</h3>
+        <p className="text-sm" style={{ color: COLORS.ink }}>
+          Formatear borra por completo el inventario, ventas, compras, proveedores, usuarios,
+          turno de caja e historial de reportes de este computador, y deja FreePOS como recién
+          instalado. Los archivos de copia de seguridad que hayas exportado tú a mano
+          <strong> no se ven afectados</strong> — siguen intactos donde los hayas guardado.
+        </p>
+        <Button type="button" variant="danger" className="self-start" onClick={() => setShowFactoryReset(true)}>
+          Formatear FreePOS (dejar de fábrica)
+        </Button>
+      </div>
+
       <p className="text-xs" style={{ color: COLORS.inkSoft }}>
         Todos los datos de FreePOS (inventario, ventas, usuarios, facturas) se guardan en un archivo
         dentro de este computador — no dependen de internet ni de la nube.
       </p>
+
+      {showFactoryReset && (
+        <FactoryResetModal user={user} onConfirm={async () => { await onFactoryReset(); setShowFactoryReset(false); }} onClose={() => setShowFactoryReset(false)} />
+      )}
     </div>
+  );
+}
+
+function FactoryResetModal({ user, onConfirm, onClose }) {
+  const [pin, setPin] = useState("");
+  const [confirmText, setConfirmText] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    if (pin !== user.pin) { setError("PIN incorrecto."); return; }
+    if (confirmText.trim().toUpperCase() !== "FORMATEAR") { setError('Escribe la palabra "FORMATEAR" (en mayúsculas está bien, no importa) para confirmar.'); return; }
+    setError("");
+    setBusy(true);
+    await onConfirm();
+  }
+
+  return (
+    <Modal title="Formatear FreePOS" onClose={onClose} width="max-w-sm">
+      <div className="flex flex-col gap-3">
+        <p className="text-sm font-medium" style={{ color: COLORS.danger }}>
+          Esto borra TODO lo guardado en este computador: inventario, ventas, compras, proveedores,
+          usuarios, turnos de caja y reportes Z. Vuelve a quedar como recién instalado (usuario
+          admin de fábrica, PIN 1234).
+        </p>
+        <p className="text-sm" style={{ color: COLORS.ink }}>
+          Las copias de seguridad que hayas exportado tú a mano (archivos .json que guardaste en
+          USB, escritorio, etc.) <strong>no se tocan</strong> — esto solo afecta el archivo interno
+          de este computador.
+        </p>
+        <form onSubmit={submit} className="flex flex-col gap-3">
+          <Field label="Tu PIN de administrador">
+            <TextInput type="password" value={pin} onChange={(e) => setPin(e.target.value)} autoFocus />
+          </Field>
+          <Field label='Escribe "FORMATEAR" para confirmar'>
+            <TextInput value={confirmText} onChange={(e) => setConfirmText(e.target.value)} />
+          </Field>
+          {error && <p className="text-sm" style={{ color: COLORS.danger }}>{error}</p>}
+          <div className="flex gap-2">
+            <Button type="button" variant="ghost" onClick={onClose} className="flex-1">Cancelar</Button>
+            <Button type="submit" variant="danger" className="flex-1" disabled={busy}>Formatear y reiniciar</Button>
+          </div>
+        </form>
+      </div>
+    </Modal>
   );
 }
 
@@ -2367,6 +2598,7 @@ export default function App() {
   const [zReports, setZReportsState] = useState([]);
   const [tables, setTablesState] = useState(DEFAULT_TABLES);
   const [returns, setReturnsState] = useState([]);
+  const [suppliers, setSuppliersState] = useState([]);
   const [user, setUser] = useState(null);
   const [page, setPage] = useState("dashboard");
   const [showOpenShift, setShowOpenShift] = useState(false);
@@ -2375,9 +2607,14 @@ export default function App() {
   const [updateInfo, setUpdateInfo] = useState(null);
   const [updateDismissed, setUpdateDismissed] = useState(false);
 
+  // Referencia con los datos más recientes, para que el backup automático (temporizador)
+  // siempre guarde lo último sin tener que recrear el temporizador en cada cambio.
+  const dataRef = useRef(null);
+  dataRef.current = { settings, users, products, categories, purchases, sales, shift, zReports, tables, returns, suppliers };
+
   useEffect(() => {
     (async () => {
-      const [s, u, p, cat, pu, sa, sh, z, tb, ret] = await Promise.all([
+      const [s, u, p, cat, pu, sa, sh, z, tb, ret, sup] = await Promise.all([
         loadCollection(KEYS.settings, DEFAULT_SETTINGS),
         loadCollection(KEYS.users, DEFAULT_USERS),
         loadCollection(KEYS.products, DEFAULT_PRODUCTS),
@@ -2388,6 +2625,7 @@ export default function App() {
         loadCollection(KEYS.zReports, []),
         loadCollection(KEYS.tables, DEFAULT_TABLES),
         loadCollection(KEYS.returns, []),
+        loadCollection(KEYS.suppliers, []),
       ]);
       const mergedSettings = { ...DEFAULT_SETTINGS, ...s };
       if (!mergedSettings.recoveryCode) {
@@ -2400,6 +2638,7 @@ export default function App() {
       setUsersState(u); setProductsState(p); setCategoriesState(cat); setPurchasesState(pu); setSalesState(sa);
       setShiftState(sh); setZReportsState(z); setTablesState(tb && tb.length ? tb : DEFAULT_TABLES);
       setReturnsState(ret);
+      setSuppliersState(sup);
       setLoading(false);
       // persist seeds / merged defaults on first run
       saveCollection(KEYS.settings, mergedSettings);
@@ -2474,6 +2713,7 @@ export default function App() {
   function setZReports(fn) { setZReportsState((prev) => { const next = typeof fn === "function" ? fn(prev) : fn; saveCollection(KEYS.zReports, next); return next; }); }
   function setTables(fn) { setTablesState((prev) => { const next = typeof fn === "function" ? fn(prev) : fn; saveCollection(KEYS.tables, next); return next; }); }
   function setReturns(fn) { setReturnsState((prev) => { const next = typeof fn === "function" ? fn(prev) : fn; saveCollection(KEYS.returns, next); return next; }); }
+  function setSuppliers(fn) { setSuppliersState((prev) => { const next = typeof fn === "function" ? fn(prev) : fn; saveCollection(KEYS.suppliers, next); return next; }); }
 
   function addCategory(name) {
     const clean = (name || "").trim();
@@ -2506,6 +2746,27 @@ export default function App() {
     }
   }
 
+  // Deja FreePOS como recién instalado: borra inventario, ventas, compras, proveedores,
+  // usuarios (vuelve al admin de fábrica), turno de caja y reportes. Esto SOLO toca el
+  // archivo interno de datos de la app — nunca borra ni toca los archivos .json que hayas
+  // exportado a mano con "Exportar copia de seguridad", porque esos viven donde tú los
+  // hayas guardado (USB, Escritorio, etc.), completamente fuera de este archivo.
+  async function factoryReset() {
+    const freshSettings = { ...DEFAULT_SETTINGS, recoveryCode: generateRecoveryCode(), updateRepo: UPDATE_REPO };
+    await setSettings(freshSettings);
+    setUsers(() => DEFAULT_USERS);
+    setProducts(() => DEFAULT_PRODUCTS);
+    setCategories(() => DEFAULT_CATEGORIES);
+    setPurchases(() => []);
+    setSales(() => []);
+    setShift(null);
+    setZReports(() => []);
+    setTables(() => DEFAULT_TABLES);
+    setReturns(() => []);
+    setSuppliers(() => []);
+    setUser(null);
+  }
+
   function handleLogin(u) {
     setUser(u);
     setPage(u.role === "admin" ? "dashboard" : "pos");
@@ -2521,7 +2782,64 @@ export default function App() {
     setZReports((prev) => [zReport, ...prev]);
     setShift(null);
     setShowOpenShift(true); // encadena inmediatamente la apertura del nuevo turno
+    writeAutoBackup(); // punto de control natural: guarda una copia justo al cerrar caja
   }
+
+  // Copia de seguridad AUTOMÁTICA (silenciosa, no la ves en pantalla): además del guardado
+  // normal de cada cambio, cada cierto tiempo FreePOS deja una copia completa aparte, en una
+  // carpeta separada, conservando solo las últimas 10. Esto protege contra el caso de que el
+  // archivo principal se dañe (por ejemplo por un corte de luz justo mientras se escribía) —
+  // si eso pasara, siempre queda un respaldo reciente del que se puede restaurar a mano
+  // (Configuración → Importar copia de seguridad) usando el archivo más nuevo de esa carpeta.
+  async function writeAutoBackup() {
+    if (!isTauriApp()) return;
+    try {
+      const { appDataDir, join } = await import("@tauri-apps/api/path");
+      const { mkdir, writeTextFile, readDir, remove } = await import("@tauri-apps/plugin-fs");
+      const dir = await appDataDir();
+      const backupsDir = await join(dir, "auto-backups");
+      try { await mkdir(backupsDir, { recursive: true }); } catch (e) { /* puede que ya exista */ }
+
+      const d = dataRef.current;
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const fileName = `auto-backup-${stamp}.json`;
+      const filePath = await join(backupsDir, fileName);
+      const data = {
+        freeposBackup: true, version: 1, auto: true, exportedAt: new Date().toISOString(),
+        businessName: d.settings.businessName,
+        settings: d.settings, users: d.users, products: d.products, categories: d.categories,
+        purchases: d.purchases, sales: d.sales, shift: d.shift, zReports: d.zReports,
+        tables: d.tables, returns: d.returns, suppliers: d.suppliers,
+      };
+      await writeTextFile(filePath, JSON.stringify(data));
+
+      // Rotación: conservar solo los 10 respaldos automáticos más recientes.
+      try {
+        const entries = await readDir(backupsDir);
+        const files = entries
+          .filter((e) => !e.isDirectory && e.name && e.name.startsWith("auto-backup-"))
+          .map((e) => e.name)
+          .sort();
+        if (files.length > 10) {
+          const toDelete = files.slice(0, files.length - 10);
+          for (const f of toDelete) {
+            await remove(await join(backupsDir, f));
+          }
+        }
+      } catch (e) {
+        console.error("No se pudo limpiar backups automáticos viejos", e);
+      }
+    } catch (e) {
+      console.error("No se pudo crear el backup automático", e);
+    }
+  }
+
+  // Backup automático cada 5 minutos mientras el programa está abierto.
+  useEffect(() => {
+    if (loading) return;
+    const interval = window.setInterval(() => { writeAutoBackup(); }, 5 * 60 * 1000);
+    return () => window.clearInterval(interval);
+  }, [loading]);
 
   // Exporta TODOS los datos del negocio (inventario, ventas, usuarios, facturas, turno, etc.)
   // a un archivo .json que se puede llevar a otro computador con FreePOS instalado.
@@ -2537,7 +2855,7 @@ export default function App() {
         version: 1,
         exportedAt: new Date().toISOString(),
         businessName: settings.businessName,
-        settings, users, products, categories, purchases, sales, shift, zReports, tables, returns,
+        settings, users, products, categories, purchases, sales, shift, zReports, tables, returns, suppliers,
       };
       const path = await save({
         defaultPath: `freepos-backup-${todayISO()}.json`,
@@ -2586,6 +2904,7 @@ export default function App() {
       setZReports(() => data.zReports || []);
       setTables(() => (data.tables && data.tables.length ? data.tables : DEFAULT_TABLES));
       setReturns(() => data.returns || []);
+      setSuppliers(() => data.suppliers || []);
       setUser(null); // vuelve al login para entrar con los usuarios recién importados
       return { ok: true };
     } catch (e) {
@@ -2594,26 +2913,17 @@ export default function App() {
     }
   }
 
+  let content;
   if (loading) {
-    return (
+    content = (
       <div className="min-h-screen flex items-center justify-center" style={{ background: COLORS.bg }}>
         <p className="text-sm" style={{ color: COLORS.inkSoft }}>Cargando FreePOS...</p>
       </div>
     );
-  }
-
-  if (!user) {
-    return (
-      <>
-        <GlobalStyle settings={settings} />
-        <LoginScreen users={users} settings={settings} setUsers={setUsers} onLogin={handleLogin} />
-      </>
-    );
-  }
-
-  return (
-    <>
-      <GlobalStyle settings={settings} />
+  } else if (!user) {
+    content = <LoginScreen users={users} settings={settings} setUsers={setUsers} onLogin={handleLogin} />;
+  } else {
+    content = (
       <div className="flex min-h-screen" style={{ background: COLORS.bg, fontFamily: "'Inter', sans-serif" }}>
         <Sidebar page={page} setPage={setPage} user={user} onLogout={() => setConfirmLogout(true)} settings={settings} shift={shift} />
         <main className="flex-1 p-6 min-w-0">
@@ -2632,16 +2942,23 @@ export default function App() {
           {page === "pos" && <POS products={products} categories={categories} settings={settings} user={user} onCompleteSale={completeSale} tables={tables} setTables={setTables} shift={shift} />}
           {page === "cashregister" && <CashRegisterPage shift={shift} sales={sales} purchases={purchases} products={products} returns={returns} zReports={zReports} settings={settings} user={user} onCloseShift={handleCloseShift} />}
           {page === "inventory" && user.role === "admin" && <Inventory products={products} setProducts={setProducts} categories={categories} setCategories={setCategories} addCategory={addCategory} settings={settings} />}
-          {page === "purchases" && user.role === "admin" && <Purchases products={products} setProducts={setProducts} purchases={purchases} setPurchases={setPurchases} settings={settings} />}
+          {page === "purchases" && user.role === "admin" && <Purchases products={products} setProducts={setProducts} purchases={purchases} setPurchases={setPurchases} suppliers={suppliers} setSuppliers={setSuppliers} settings={settings} />}
           {page === "reports" && user.role === "admin" && <Reports sales={sales} products={products} returns={returns} settings={settings} user={user} onReturn={handleReturn} />}
           {page === "users" && user.role === "admin" && <UsersPage users={users} setUsers={setUsers} currentUser={user} />}
-          {page === "settings" && user.role === "admin" && <SettingsPage settings={settings} setSettings={setSettings} onExportBackup={exportBackup} onImportBackup={importBackup} onCheckUpdates={checkForUpdates} onOpenExternal={openExternal} />}
+          {page === "settings" && user.role === "admin" && <SettingsPage settings={settings} setSettings={setSettings} user={user} onExportBackup={exportBackup} onImportBackup={importBackup} onCheckUpdates={checkForUpdates} onOpenExternal={openExternal} onFactoryReset={factoryReset} />}
         </main>
       </div>
+    );
+  }
 
-      {showOpenShift && <OpenShiftModal user={user} onConfirm={handleOpenShift} />}
+  return (
+    <>
+      <GlobalStyle settings={settings} />
+      {content}
 
-      {confirmLogout && (
+      {user && showOpenShift && <OpenShiftModal user={user} onConfirm={handleOpenShift} />}
+
+      {user && confirmLogout && (
         <ConfirmModal
           title="Cerrar sesión"
           message={`¿Seguro que quieres cerrar sesión, ${user.name}? Las mesas y ventas quedan guardadas, cualquiera puede continuar donde quedaste.`}
@@ -2653,9 +2970,9 @@ export default function App() {
       {closeChoice && (
         <ConfirmModal
           title="¿Qué quieres hacer?"
-          message="Puedes cerrar sesión y dejar el programa abierto para el siguiente turno, o cerrar el programa por completo."
+          message={user ? "Puedes cerrar sesión y dejar el programa abierto para el siguiente turno, o cerrar el programa por completo." : "¿Deseas cerrar el programa por completo?"}
           options={[
-            { label: "Cerrar sesión (dejar el programa abierto)", variant: "subtle", onClick: () => { setUser(null); setCloseChoice(false); } },
+            ...(user ? [{ label: "Cerrar sesión (dejar el programa abierto)", variant: "subtle", onClick: () => { setUser(null); setCloseChoice(false); } }] : []),
             { label: "Cerrar el programa por completo", variant: "danger", onClick: quitApp },
           ]}
           onCancel={() => setCloseChoice(false)}
