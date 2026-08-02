@@ -10,7 +10,7 @@ import {
 
 // Súbelo cada vez que publiques una versión nueva en GitHub (debe coincidir con el
 // tag de la release, ej: si publicas "v0.2.0", pon "0.2.0" aquí).
-const APP_VERSION = "0.2.0";
+const APP_VERSION = "0.3.0";
 
 // Repositorio de GitHub donde se publican las actualizaciones de FreePOS.
 // Es una propiedad del programa (no de cada negocio), por eso queda fija aquí
@@ -122,44 +122,9 @@ function marginFromCostAndPrice(cost, price) {
   return Math.round(((p - c) / c) * 1000) / 10; // 1 decimal
 }
 
-function isNewerVersion(latest, current) {
-  const pl = String(latest).replace(/^v/i, "").split(".").map((n) => parseInt(n, 10) || 0);
-  const pc = String(current).replace(/^v/i, "").split(".").map((n) => parseInt(n, 10) || 0);
-  for (let i = 0; i < Math.max(pl.length, pc.length); i++) {
-    const a = pl[i] || 0, b = pc[i] || 0;
-    if (a > b) return true;
-    if (a < b) return false;
-  }
-  return false;
-}
-
-// Consulta la última release publicada en GitHub (releases/latest es un endpoint público,
-// no necesita ningún token). Devuelve null si no hay repo configurado o algo falla.
-async function checkForUpdates(repo) {
-  if (!repo || !repo.includes("/")) {
-    return { available: false, notFound: true, message: "No hay repositorio configurado (escríbelo y guarda cambios primero)." };
-  }
-  try {
-    const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`);
-    if (!res.ok) {
-      return { available: false, notFound: true, message: `GitHub respondió ${res.status} (revisa que el repositorio "${repo}" exista, sea público o accesible, y que ya tenga al menos una release publicada).` };
-    }
-    const data = await res.json();
-    const latestVersion = (data.tag_name || "").replace(/^v/i, "");
-    if (!latestVersion) {
-      return { available: false, notFound: true, message: "El repositorio no tiene ninguna release publicada todavía." };
-    }
-    return {
-      available: isNewerVersion(latestVersion, APP_VERSION),
-      latestVersion,
-      url: data.html_url || `https://github.com/${repo}/releases/latest`,
-      notes: data.body || "",
-    };
-  } catch (e) {
-    console.error("No se pudo buscar actualizaciones", e);
-    return { available: false, notFound: true, message: (e && (e.message || e.toString())) || "Error de red desconocido." };
-  }
-}
+// NOTA: la comprobación de versión y la descarga/instalación de actualizaciones ahora las
+// hace el plugin oficial de Tauri (@tauri-apps/plugin-updater) directamente dentro de App(),
+// porque es el único que puede firmar/verificar y de verdad instalar el archivo nuevo.
 
 function formatMoney(amount, currency) {
   const c = currency || DEFAULT_SETTINGS.currency;
@@ -385,6 +350,16 @@ function Badge({ children, tone = "primary" }) {
   );
 }
 
+function Logo({ size = 32, radius = 8 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+      <rect x="0" y="0" width="1024" height="1024" rx="204" fill={COLORS.primary} />
+      <path d="M292,180 L732,180 L732,660 L696,740 L659,660 L622,740 L585,660 L549,740 L512,660 L475,740 L439,660 L402,740 L365,660 L329,740 L292,660 Z" fill="#FFFFFF" />
+      <path d="M400,440 L475,520 L648,320" fill="none" stroke={COLORS.primary} strokeWidth="48" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function EmptyState({ icon: Icon, title, subtitle }) {
   return (
     <div className="flex flex-col items-center justify-center py-16 text-center gap-2">
@@ -435,13 +410,15 @@ function LoginScreen({ users, settings, setUsers, onLogin }) {
 
   return (
     <div className="min-h-screen w-full flex items-center justify-center" style={{ background: COLORS.bg, fontFamily: "'Inter', sans-serif" }}>
-      <div className="w-full max-w-sm rounded-2xl shadow-lg p-8" style={{ background: COLORS.surface }}>
-        <div className="flex flex-col items-center gap-2 mb-6">
-          <div className="w-12 h-12 rounded-xl flex items-center justify-center" style={{ background: COLORS.primary }}>
-            <Store size={24} color="#fff" />
+      <div className="w-full max-w-sm rounded-2xl shadow-lg p-8" style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}` }}>
+        <div className="flex flex-col items-center gap-3 mb-7">
+          <div className="rounded-2xl shadow-sm" style={{ boxShadow: "0 8px 20px -6px rgba(15,110,93,0.45)" }}>
+            <Logo size={56} />
           </div>
-          <h1 className="text-xl font-bold tracking-tight" style={{ color: COLORS.ink, fontFamily: "'Space Grotesk', sans-serif" }}>FreePOS</h1>
-          <p className="text-sm" style={{ color: COLORS.inkSoft }}>{settings.businessName}</p>
+          <div className="flex flex-col items-center gap-0.5">
+            <h1 className="text-2xl font-bold tracking-tight" style={{ color: COLORS.ink, fontFamily: "'Space Grotesk', sans-serif" }}>FreePOS</h1>
+            <p className="text-sm" style={{ color: COLORS.inkSoft }}>{settings.businessName}</p>
+          </div>
         </div>
         <form onSubmit={submit} className="flex flex-col gap-4">
           <Field label="Usuario">
@@ -559,13 +536,14 @@ function Sidebar({ page, setPage, user, onLogout, settings, shift }) {
 
   return (
     <div className="w-56 shrink-0 h-screen sticky top-0 flex flex-col no-print" style={{ background: COLORS.ink }}>
-      <div className="px-5 py-5 flex items-center gap-2">
-        <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: COLORS.primary }}>
-          <Store size={16} color="#fff" />
+      <div className="px-5 py-5 flex items-center gap-2.5" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+        <Logo size={30} />
+        <div className="flex flex-col leading-tight">
+          <span className="font-bold text-white tracking-tight text-[15px]" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>FreePOS</span>
+          <span className="text-[11px] truncate max-w-[130px]" style={{ color: "#7E8894" }}>{settings.businessName}</span>
         </div>
-        <span className="font-bold text-white tracking-tight" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>FreePOS</span>
       </div>
-      <nav className="flex-1 px-3 flex flex-col gap-1 mt-2">
+      <nav className="flex-1 px-3 flex flex-col gap-1 mt-3">
         {items.map((it) => {
           const Icon = it.icon;
           const active = page === it.id;
@@ -2295,14 +2273,12 @@ function UsersPage({ users, setUsers, currentUser }) {
 
 /* ---------------------------------- Settings ---------------------------------- */
 
-function SettingsPage({ settings, setSettings, user, onExportBackup, onImportBackup, onCheckUpdates, onOpenExternal, onFactoryReset }) {
+function SettingsPage({ settings, setSettings, user, onExportBackup, onImportBackup, updateStatus, onCheckUpdates, onRelaunch, onOpenExternal, onFactoryReset }) {
   const [form, setForm] = useState(settings);
   const [drawerTest, setDrawerTest] = useState(null);
   const [drawerBusy, setDrawerBusy] = useState(false);
   const [backupBusy, setBackupBusy] = useState(false);
   const [backupMsg, setBackupMsg] = useState(null);
-  const [updateBusy, setUpdateBusy] = useState(false);
-  const [updateResult, setUpdateResult] = useState(null);
   const [saveStatus, setSaveStatus] = useState(null);
   const [showFactoryReset, setShowFactoryReset] = useState(false);
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
@@ -2319,13 +2295,6 @@ function SettingsPage({ settings, setSettings, user, onExportBackup, onImportBac
     const res = await openCashDrawer();
     setDrawerBusy(false);
     setDrawerTest(res);
-  }
-
-  async function handleCheckUpdates() {
-    setUpdateBusy(true);
-    const info = await onCheckUpdates(UPDATE_REPO);
-    setUpdateBusy(false);
-    setUpdateResult(info || { available: false, notFound: true });
   }
 
   async function handleExport() {
@@ -2491,24 +2460,31 @@ function SettingsPage({ settings, setSettings, user, onExportBackup, onImportBac
           Repositorio: <span className="font-mono">{UPDATE_REPO}</span>
         </p>
         <p className="text-xs -mt-1" style={{ color: COLORS.inkSoft }}>
-          FreePOS revisa solo, cada vez que abre, si hay una versión más nueva publicada — no necesitas
-          configurar nada, este dato viene incorporado en el programa.
+          Cada vez que abres FreePOS, revisa solo si hay una versión más nueva y, si la hay, la
+          <strong> descarga e instala automáticamente</strong> en segundo plano — solo falta que
+          reinicies cuando te convenga para que quede aplicada.
         </p>
-        <div className="flex items-center gap-3">
-          <Button type="button" variant="ghost" onClick={handleCheckUpdates} disabled={updateBusy}>
-            Buscar actualizaciones ahora
+        <div className="flex items-center gap-3 flex-wrap">
+          <Button type="button" variant="ghost" onClick={onCheckUpdates} disabled={updateStatus && (updateStatus.state === "checking" || updateStatus.state === "downloading")}>
+            Buscar e instalar ahora
           </Button>
-          {updateResult && (
-            updateResult.notFound ? (
-              <span className="text-xs" style={{ color: COLORS.danger }}>{updateResult.message || "No se pudo consultar el repositorio."}</span>
-            ) : updateResult.available ? (
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-medium" style={{ color: COLORS.primaryDark }}>Hay una versión nueva: v{updateResult.latestVersion}</span>
-                <Button size="sm" onClick={() => onOpenExternal(updateResult.url)}>Ver</Button>
-              </div>
-            ) : (
-              <span className="text-xs" style={{ color: COLORS.inkSoft }}>Ya tienes la última versión.</span>
-            )
+          {updateStatus && updateStatus.state === "checking" && (
+            <span className="text-xs" style={{ color: COLORS.inkSoft }}>Buscando...</span>
+          )}
+          {updateStatus && updateStatus.state === "downloading" && (
+            <span className="text-xs" style={{ color: COLORS.primaryDark }}>Descargando e instalando v{updateStatus.version}...</span>
+          )}
+          {updateStatus && updateStatus.state === "upToDate" && (
+            <span className="text-xs" style={{ color: COLORS.inkSoft }}>Ya tienes la última versión.</span>
+          )}
+          {updateStatus && updateStatus.state === "ready" && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium" style={{ color: COLORS.primaryDark }}>v{updateStatus.version} instalada, falta reiniciar.</span>
+              <Button size="sm" onClick={onRelaunch}>Reiniciar ahora</Button>
+            </div>
+          )}
+          {updateStatus && updateStatus.state === "error" && (
+            <span className="text-xs" style={{ color: COLORS.danger }}>{updateStatus.message || "No se pudo revisar actualizaciones."}</span>
           )}
         </div>
       </div>
@@ -2604,7 +2580,7 @@ export default function App() {
   const [showOpenShift, setShowOpenShift] = useState(false);
   const [confirmLogout, setConfirmLogout] = useState(false);
   const [closeChoice, setCloseChoice] = useState(false); // ventana del SO pidió cerrarse (Tauri)
-  const [updateInfo, setUpdateInfo] = useState(null);
+  const [updateStatus, setUpdateStatus] = useState(null); // { state: 'checking'|'downloading'|'ready'|'upToDate'|'error', version, message }
   const [updateDismissed, setUpdateDismissed] = useState(false);
 
   // Referencia con los datos más recientes, para que el backup automático (temporizador)
@@ -2682,12 +2658,47 @@ export default function App() {
     setCloseChoice(false);
   }
 
-  // Revisa en silencio si hay una versión nueva publicada (no descarga ni instala nada)
+  // Revisa si hay una versión nueva publicada y, si la hay, la DESCARGA E INSTALA sola en
+  // segundo plano (usa el plugin oficial de actualizaciones de Tauri, con firma verificada).
+  // Solo falta reiniciar para que quede aplicada — eso se lo dejamos pedir al usuario con un
+  // botón, para no interrumpirlo de golpe si está a mitad de una venta.
+  async function checkAndAutoUpdate() {
+    if (!isTauriApp()) {
+      setUpdateStatus({ state: "error", message: "Esta función solo está disponible en la app de escritorio (Tauri)." });
+      return;
+    }
+    setUpdateStatus({ state: "checking" });
+    try {
+      const { check } = await import("@tauri-apps/plugin-updater");
+      const update = await check();
+      if (update) {
+        setUpdateStatus({ state: "downloading", version: update.version });
+        await update.downloadAndInstall();
+        setUpdateStatus({ state: "ready", version: update.version, notes: update.body || "" });
+        setUpdateDismissed(false);
+      } else {
+        setUpdateStatus({ state: "upToDate" });
+      }
+    } catch (e) {
+      console.error("Error revisando/instalando actualización", e);
+      setUpdateStatus({ state: "error", message: (e && (e.message || e.toString())) || "Error desconocido. Revisa que el repositorio sea público y tenga una release publicada con archivos de actualización (latest.json)." });
+    }
+  }
+
+  async function relaunchApp() {
+    try {
+      const { relaunch } = await import("@tauri-apps/plugin-process");
+      await relaunch();
+    } catch (e) {
+      console.error("No se pudo reiniciar automáticamente", e);
+      window.alert("La actualización ya se instaló, pero no se pudo reiniciar sola. Cierra y vuelve a abrir FreePOS a mano para terminar de aplicarla.");
+    }
+  }
+
+  // Revisa (y descarga/instala) sola, una vez, cada vez que se abre el programa.
   useEffect(() => {
     if (loading) return;
-    checkForUpdates(UPDATE_REPO).then((info) => {
-      if (info && info.available) setUpdateInfo(info);
-    });
+    checkAndAutoUpdate();
   }, [loading]);
 
   async function openExternal(url) {
@@ -2927,13 +2938,13 @@ export default function App() {
       <div className="flex min-h-screen" style={{ background: COLORS.bg, fontFamily: "'Inter', sans-serif" }}>
         <Sidebar page={page} setPage={setPage} user={user} onLogout={() => setConfirmLogout(true)} settings={settings} shift={shift} />
         <main className="flex-1 p-6 min-w-0">
-          {updateInfo && updateInfo.available && !updateDismissed && (
+          {updateStatus && updateStatus.state === "ready" && !updateDismissed && (
             <div className="mb-4 rounded-xl p-3 flex items-center justify-between no-print" style={{ background: COLORS.primarySoft }}>
               <p className="text-sm font-medium" style={{ color: COLORS.primaryDark }}>
-                Hay una versión nueva de FreePOS disponible (v{updateInfo.latestVersion}). Estás usando v{APP_VERSION}.
+                Ya se descargó e instaló FreePOS v{updateStatus.version}. Reinicia para terminar de aplicarla.
               </p>
               <div className="flex items-center gap-2">
-                <Button size="sm" onClick={() => openExternal(updateInfo.url)}>Ver actualización</Button>
+                <Button size="sm" onClick={relaunchApp}>Reiniciar ahora</Button>
                 <button onClick={() => setUpdateDismissed(true)} className="p-1"><X size={16} style={{ color: COLORS.primaryDark }} /></button>
               </div>
             </div>
@@ -2945,7 +2956,7 @@ export default function App() {
           {page === "purchases" && user.role === "admin" && <Purchases products={products} setProducts={setProducts} purchases={purchases} setPurchases={setPurchases} suppliers={suppliers} setSuppliers={setSuppliers} settings={settings} />}
           {page === "reports" && user.role === "admin" && <Reports sales={sales} products={products} returns={returns} settings={settings} user={user} onReturn={handleReturn} />}
           {page === "users" && user.role === "admin" && <UsersPage users={users} setUsers={setUsers} currentUser={user} />}
-          {page === "settings" && user.role === "admin" && <SettingsPage settings={settings} setSettings={setSettings} user={user} onExportBackup={exportBackup} onImportBackup={importBackup} onCheckUpdates={checkForUpdates} onOpenExternal={openExternal} onFactoryReset={factoryReset} />}
+          {page === "settings" && user.role === "admin" && <SettingsPage settings={settings} setSettings={setSettings} user={user} onExportBackup={exportBackup} onImportBackup={importBackup} updateStatus={updateStatus} onCheckUpdates={checkAndAutoUpdate} onRelaunch={relaunchApp} onOpenExternal={openExternal} onFactoryReset={factoryReset} />}
         </main>
       </div>
     );

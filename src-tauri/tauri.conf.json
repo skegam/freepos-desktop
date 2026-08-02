@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "freepos-desktop",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "identifier": "com.skegam.freepos-desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -20,6 +20,14 @@
     ],
     "security": {
       "csp": null
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ5NjEzN0M5QTIxM0E2NjgKUldSb3BoT2l5VGRoU2NrU2Q2VExaZ0ZwV3RsNzhmcXZ1cEM0Z2xHWWI0WDVjMmQ0cmJYT0t4QysK",
+      "endpoints": [
+        "https://github.com/skegam/freepos-desktop/releases/latest/download/latest.json"
+      ]
     }
   },
   "bundle": {
